@@ -1,0 +1,72 @@
+package com.research.aserver;
+
+import gnu.io.NoSuchPortException;
+
+import java.util.ArrayList;
+import java.util.Enumeration;
+
+import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.util.Iterator;
+
+
+public class Server {
+	
+	private ServerSocket server;
+	private int port = 8888;
+	private ArrayList<ConnectionHandler> users = new ArrayList<ConnectionHandler>();
+	
+	public Server() throws Exception{
+		try {
+			server = new ServerSocket(port);
+		} catch	(IOException e){
+			e.printStackTrace();
+		}
+	}
+	
+	/*
+	 * @param args
+	 * @throws IOException
+	 */
+	public static void main(String[] args) throws Exception
+	{
+		Server midMan = new Server();
+		midMan.handleConnection();
+	}
+	
+	public void handleConnection() throws IOException, NoSuchPortException {
+		System.out.println("Waiting for client message...");         
+		//        
+		// The server do a loop here to accept all connection initiated by the        
+		// client application.       
+		//        
+		while (true) {
+			for(int i = 0; i < users.size(); i++)
+			{
+				// Check connection, remove on dead
+				if(!users.get(i).isConnected())
+				{
+					users.get(i).close();
+					users.remove(i);
+				}
+			}
+			try {
+				Socket socket = server.accept();            
+				users.add(new ConnectionHandler(socket));
+				
+			} catch (IOException e) {
+				e.printStackTrace();            
+			}        
+		}    
+	}
+}
