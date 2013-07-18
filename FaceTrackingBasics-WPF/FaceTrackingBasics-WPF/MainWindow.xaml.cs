@@ -1,0 +1,737 @@
+﻿// -----------------------------------------------------------------------
+// <copyright file="MainWindow.xaml.cs" company="Microsoft">
+//     Copyright (c) Microsoft Corporation.  All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace FaceTrackingBasics
+{
+    using System;
+    using System.Windows;
+    using System.Windows.Data;
+    using System.Windows.Media;
+    using System.Windows.Media.Imaging;
+    using System.Windows.Controls;
+    using System.ComponentModel;
+    using Microsoft.Kinect;
+    using Microsoft.Kinect.Toolkit;
+
+    using System.Collections.Generic;
+    using System.Globalization;
+    using System.IO;
+    using System.Threading;
+
+    /// <summary>
+    /// Interaction logic for MainWindow.xaml
+    /// </summary>
+    public partial class MainWindow : Window
+    {
+        private static readonly int Bgr32BytesPerPixel = (PixelFormats.Bgr32.BitsPerPixel + 7) / 8;
+        private readonly KinectSensorChooser sensorChooser = new KinectSensorChooser();
+       // private readonly BackgroundWorker backgroundWorker = new BackgroundWorker();
+        private WriteableBitmap colorImageWritableBitmap;
+        private byte[] colorImageData;
+        private ColorImageFormat currentColorImageFormat = ColorImageFormat.Undefined;
+        public static Server tcpserv = new Server(8888);
+        public static MoveWindows Mwindow = new MoveWindows();
+        private double sound_average;
+        public static int cnt = 0;
+        public static int avecnt_time = 200;
+        public double[] amp_sum = new double[avecnt_time];
+        public bool sum_flag = false;
+        public static int sendtiming = 0;
+        public static System.Windows.Controls.CheckBox checkBox_face_pub = new System.Windows.Controls.CheckBox();
+        public static System.Windows.Controls.CheckBox checkBox_movewindow_pub = new System.Windows.Controls.CheckBox();
+        public static System.Windows.Controls.CheckBox checkBox_fixYdegree_pub = new System.Windows.Controls.CheckBox();
+
+
+        public static double depthInit = 1.5;
+        public static double depthInit_tmp = 0;
+
+
+        /// <summary>
+        /// for Audio
+        /// </summary>
+        /// <summary>
+        /// Number of milliseconds between each read of audio data from the stream.
+        /// </summary>
+        private const int AudioPollingInterval = 50;
+
+        /// <summary>
+        /// Number of samples captured from Kinect audio stream each millisecond.
+        /// </summary>
+        private const int SamplesPerMillisecond = 16;
+
+        /// <summary>
+        /// Number of bytes in each Kinect audio stream sample.
+        /// </summary>
+        private const int BytesPerSample = 2;
+
+        /// <summary>
+        /// Number of audio samples represented by each column of pixels in wave bitmap.
+        /// </summary>
+        private const int SamplesPerColumn = 40;
+
+        /// <summary>
+        /// Width of bitmap that stores audio stream energy data ready for visualization.
+        /// </summary>
+        private const int EnergyBitmapWidth = 780;
+
+        /// <summary>
+        /// Height of bitmap that stores audio stream energy data ready for visualization.
+        /// </summary>
+        private const int EnergyBitmapHeight = 195;
+
+        /// <summary>
+        /// Bitmap that contains constructed visualization for audio stream energy, ready to
+        /// be displayed. It is a 2-color bitmap with white as background color and blue as
+        /// foreground color.
+        /// </summary>
+        private readonly WriteableBitmap energyBitmap;
+
+        /// <summary>
+        /// Rectangle representing the entire energy bitmap area. Used when drawing background
+        /// for energy visualization.
+        /// </summary>
+        private readonly Int32Rect fullEnergyRect = new Int32Rect(0, 0, EnergyBitmapWidth, EnergyBitmapHeight);
+
+        /// <summary>
+        /// Array of background-color pixels corresponding to an area equal to the size of whole energy bitmap.
+        /// </summary>
+        private readonly byte[] backgroundPixels = new byte[EnergyBitmapWidth * EnergyBitmapHeight];
+
+        /// <summary>
+        /// Buffer used to hold audio data read from audio stream.
+        /// </summary>
+        private readonly byte[] audioBuffer = new byte[AudioPollingInterval * SamplesPerMillisecond * BytesPerSample];
+
+        /// <summary>
+        /// Buffer used to store audio stream energy data as we read audio.
+        /// 
+        /// We store 25% more energy values than we strictly need for visualization to allow for a smoother
+        /// stream animation effect, since rendering happens on a different schedule with respect to audio
+        /// capture.
+        /// </summary>
+        private readonly double[] energy = new double[(uint)(EnergyBitmapWidth * 1.25)];
+
+        /// <summary>
+        /// Active Kinect sensor.
+        /// </summary>
+        private KinectSensor sensor;
+
+        /// <summary>
+        /// Stream of audio being captured by Kinect sensor.
+        /// </summary>
+        private Stream audioStream;
+
+        /// <summary>
+        /// <code>true</code> if audio is currently being read from Kinect stream, <code>false</code> otherwise.
+        /// </summary>
+        private bool reading;
+
+        /// <summary>
+        /// Thread that is reading audio from Kinect stream.
+        /// </summary>
+        private Thread readingThread;
+
+        /// <summary>
+        /// Array of foreground-color pixels corresponding to a line as long as the energy bitmap is tall.
+        /// This gets re-used while constructing the energy visualization.
+        /// </summary>
+        private byte[] foregroundPixels;
+
+        /// <summary>
+        /// Sum of squares of audio samples being accumulated to compute the next energy value.
+        /// </summary>
+        private double accumulatedSquareSum;
+
+        /// <summary>
+        /// Number of audio samples accumulated so far to compute the next energy value.
+        /// </summary>
+        private int accumulatedSampleCount;
+
+        /// <summary>
+        /// Index of next element available in audio energy buffer.
+        /// </summary>
+        private int energyIndex;
+
+        /// <summary>
+        /// Number of newly calculated audio stream energy values that have not yet been
+        /// displayed.
+        /// </summary>
+        private int newEnergyAvailable;
+
+        /// <summary>
+        /// Error between time slice we wanted to display and time slice that we ended up
+        /// displaying, given that we have to display in integer pixels.
+        /// </summary>
+        private double energyError;
+
+        /// <summary>
+        /// Last time energy visualization was rendered to screen.
+        /// </summary>
+        private DateTime? lastEnergyRefreshTime;
+
+        /// <summary>
+        /// Index of first energy element that has never (yet) been displayed to screen.
+        /// </summary>
+        private int energyRefreshIndex;
+
+        private double vol_sensitivity = 0.75;
+        private bool eye_open = false;
+
+        public MainWindow()
+        {
+            InitializeComponent();
+            
+            var faceTrackingViewerBinding = new Binding("Kinect") { Source = sensorChooser };
+            faceTrackingViewer.SetBinding(FaceTrackingViewer.KinectProperty, faceTrackingViewerBinding);
+             
+            //顔の深度初期化
+            setDepthInit(depthInit);
+            labelDepth.Content = "DepthInit:" +getDepthInit();
+
+            //textBlockDepth.Text = depthInit;
+            checkBox_face_pub = checkBox_face;
+            checkBox_movewindow_pub = checkBox_movewindow;
+            checkBox_fixYdegree_pub = checkBox_fixYdegree;
+            sensorChooser.KinectChanged += SensorChooserOnKinectChanged;
+            //backgroundWorker.DoWork += OnDoWork;
+            sensorChooser.Start();
+        }
+
+
+
+
+        private void SensorChooserOnKinectChanged(object sender, KinectChangedEventArgs kinectChangedEventArgs)
+        {
+            KinectSensor oldSensor = kinectChangedEventArgs.OldSensor;
+            KinectSensor newSensor = kinectChangedEventArgs.NewSensor;
+
+            if (oldSensor != null)
+            {
+                oldSensor.AllFramesReady -= KinectSensorOnAllFramesReady;
+                oldSensor.ColorStream.Disable();
+                oldSensor.DepthStream.Disable();
+                oldSensor.DepthStream.Range = DepthRange.Default;
+                oldSensor.SkeletonStream.Disable();
+                oldSensor.SkeletonStream.EnableTrackingInNearRange = false;
+                oldSensor.SkeletonStream.TrackingMode = SkeletonTrackingMode.Default;
+            }
+
+            if (newSensor != null)
+            {
+                try
+                {
+                    newSensor.ColorStream.Enable(ColorImageFormat.RgbResolution640x480Fps30);
+                    newSensor.DepthStream.Enable(DepthImageFormat.Resolution320x240Fps30);
+                    try
+                    {
+                        // This will throw on non Kinect For Windows devices.
+                        newSensor.DepthStream.Range = DepthRange.Near;
+                        newSensor.SkeletonStream.EnableTrackingInNearRange = true;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        newSensor.DepthStream.Range = DepthRange.Default;
+                        newSensor.SkeletonStream.EnableTrackingInNearRange = false;
+                    }
+
+                    //Nearmode
+                    newSensor.DepthStream.Range = DepthRange.Near;
+                    newSensor.SkeletonStream.EnableTrackingInNearRange = true;
+
+                    newSensor.SkeletonStream.TrackingMode = SkeletonTrackingMode.Seated;
+                    newSensor.SkeletonStream.Enable();
+                    newSensor.AllFramesReady += KinectSensorOnAllFramesReady;
+                }
+                catch (InvalidOperationException)
+                {
+                    // This exception can be thrown when we are trying to
+                    // enable streams on a device that has gone away.  This
+                    // can occur, say, in app shutdown scenarios when the sensor
+                    // goes away between the time it changed status and the
+                    // time we get the sensor changed notification.
+                    //
+                    // Behavior here is to just eat the exception and assume
+                    // another notification will come along if a sensor
+                    // comes back.
+                }
+            }
+        }
+
+        private void WindowClosed(object sender, EventArgs e)
+        {
+            sensorChooser.Stop();
+            faceTrackingViewer.Dispose();
+            // Tell audio reading thread to stop and wait for it to finish.
+            this.reading = false;
+            if (null != readingThread)
+            {
+                readingThread.Join();
+            }
+
+            tcpserv.Close();
+            if (null != this.sensor)
+            {
+                CompositionTarget.Rendering -= UpdateEnergy;
+
+                //this.sensor.AudioSource.BeamAngleChanged -= this.AudioSourceBeamChanged;
+                //this.sensor.AudioSource.SoundSourceAngleChanged -= this.AudioSourceSoundSourceAngleChanged;
+                this.sensor.AudioSource.Stop();
+
+                this.sensor.Stop();
+                this.sensor = null;
+            }
+        }
+        private void KinectSensorOnAllFramesReady(object sender, AllFramesReadyEventArgs allFramesReadyEventArgs)
+        {
+            using (var colorImageFrame = allFramesReadyEventArgs.OpenColorImageFrame())
+            {
+                if (colorImageFrame == null)
+                {
+                    return;
+                }
+
+                // Make a copy of the color frame for displaying.
+                var haveNewFormat = this.currentColorImageFormat != colorImageFrame.Format;
+                if (haveNewFormat)
+                {
+                    this.currentColorImageFormat = colorImageFrame.Format;
+                    this.colorImageData = new byte[colorImageFrame.PixelDataLength];
+                    this.colorImageWritableBitmap = new WriteableBitmap(
+                        colorImageFrame.Width, colorImageFrame.Height, 96, 96, PixelFormats.Bgr32, null);
+                    ColorImage.Source = this.colorImageWritableBitmap;
+                }
+
+                colorImageFrame.CopyPixelDataTo(this.colorImageData);
+                this.colorImageWritableBitmap.WritePixels(
+                    new Int32Rect(0, 0, colorImageFrame.Width, colorImageFrame.Height),
+                    this.colorImageData,
+                    colorImageFrame.Width * Bgr32BytesPerPixel,
+                    0);
+            }
+        }
+        /*
+        void OnDoWork(object sender, DoWorkEventArgs e)
+        {
+            // ここは別スレッド。
+            var worker = sender as BackgroundWorker;
+            if (worker == backgroundWorker)
+            {
+                tcpserv.ListenStart();
+            }
+        }*/
+        public static void setDepthInit(double depth)
+        {
+            depthInit = depth;
+        }
+        public static double getDepthInit()
+        {
+            return depthInit;
+        }
+        public static void setDepthInitTmp(double depth)
+        {
+            depthInit_tmp = depth;
+        }
+        public static double getDepthInitTmp()
+        {
+            return depthInit_tmp;
+        }
+        private void button1_Click(object sender, RoutedEventArgs e)
+        {
+            setDepthInit(getDepthInitTmp());
+            labelDepth.Content = "DepthInit:" + getDepthInit();
+            
+            /*
+            this.backgroundWorker.RunWorkerAsync();
+            var worker = sender as BackgroundWorker;
+            if (worker == backgroundWorker)
+            {
+                Console.WriteLine("bacaaaa");
+                tcpserv.ListenStart();
+            }
+            /
+            Console.WriteLine("aaaaa");
+            //文字コードを指定する
+            System.Text.Encoding enc = System.Text.Encoding.UTF8;
+            Console.WriteLine("unkooooooooooooooo");
+            //ローカルIPアドレスでListenを開始する
+            string host = "localhost";
+            int port = 6460;
+            System.Net.IPAddress ipAdd =
+                System.Net.Dns.Resolve(host).AddressList[0];
+            System.Net.Sockets.TcpListener listener =
+                new System.Net.Sockets.TcpListener(ipAdd, port);
+            listener.Start();
+            Console.WriteLine("Port{0}のListenを開始しました。", port);
+
+            //接続要求があったら受け入れる
+            System.Net.Sockets.TcpClient tcp = listener.AcceptTcpClient();
+            Console.WriteLine("クライアントが接続しました。");
+            //NetworkStreamを取得
+            System.Net.Sockets.NetworkStream ns = tcp.GetStream();
+
+            //クライアントから送られたデータを受信する
+            System.IO.MemoryStream ms = new System.IO.MemoryStream();
+            byte[] resBytes = new byte[256];
+            int resSize;
+            do
+            {
+                //データの一部を受信する
+                resSize = ns.Read(resBytes, 0, resBytes.Length);
+                //Readが0を返した時はクライアントが切断したと判断
+                if (resSize == 0)
+                {
+                    Console.WriteLine("クライアントが切断しました。");
+                    Console.ReadLine();
+                    return;
+                }
+                //受信したデータを蓄積する
+                ms.Write(resBytes, 0, resSize);
+            } while (ns.DataAvailable);
+            //受信したデータを文字列に変換
+            string resMsg = enc.GetString(ms.ToArray());
+            ms.Close();
+            Console.WriteLine(resMsg);
+
+            //クライアントにデータを送信する
+            string sendMsg = resMsg.Length.ToString() + "文字";
+            //文字列をByte型配列に変換
+            byte[] sendBytes = enc.GetBytes(sendMsg);
+            //データを送信する
+            ns.Write(sendBytes, 0, sendBytes.Length);
+            Console.WriteLine(sendMsg);
+
+            //閉じる
+            ns.Close();
+            tcp.Close();
+            Console.WriteLine("切断しました。");
+
+            //リスナを閉じる
+            listener.Stop();
+            Console.WriteLine("Listenerを閉じました。");
+
+            Console.ReadLine();
+             * */
+        }
+
+        /// <summary>
+        /// Execute initialization tasks.
+        /// </summary>
+        /// <param name="sender">object sending the event.</param>
+        /// <param name="e">event arguments.</param>
+        private void WindowLoaded(object sender, RoutedEventArgs e)
+        {
+            // Look through all sensors and start the first connected one.
+            // This requires that a Kinect is connected at the time of app startup.
+            // To make your app robust against plug/unplug, 
+            // it is recommended to use KinectSensorChooser provided in Microsoft.Kinect.Toolkit
+            foreach (var potentialSensor in KinectSensor.KinectSensors)
+            {
+                if (potentialSensor.Status == KinectStatus.Connected)
+                {
+                    this.sensor = potentialSensor;
+                    break;
+                }
+            }
+
+            if (null != this.sensor)
+            {
+                try
+                {
+                    // Start the sensor!
+                    this.sensor.Start();
+                }
+                catch (IOException)
+                {
+                    // Some other application is streaming from the same Kinect sensor
+                    this.sensor = null;
+                }
+            }
+
+            /*
+            if (null == this.sensor)
+            {
+                this.statusBarText.Text = Properties.Resources.NoKinectReady;
+                return;
+            }
+            */
+            /*
+            // Initialize foreground pixels
+            this.foregroundPixels = new byte[EnergyBitmapHeight];
+            for (int i = 0; i < this.foregroundPixels.Length; ++i)
+            {
+                this.foregroundPixels[i] = 0xff;
+            }
+            */
+
+//            this.waveDisplay.Source = this.energyBitmap;
+
+            CompositionTarget.Rendering += UpdateEnergy;
+
+//            this.sensor.AudioSource.BeamAngleChanged += this.AudioSourceBeamChanged;
+//            this.sensor.AudioSource.SoundSourceAngleChanged += this.AudioSourceSoundSourceAngleChanged;
+
+            // Start streaming audio!
+            this.audioStream = this.sensor.AudioSource.Start();
+
+            // Use a separate thread for capturing audio because audio stream read operations
+            // will block, and we don't want to block main UI thread.
+            this.reading = true;
+            this.readingThread = new Thread(AudioReadingThread);
+            this.readingThread.Start();
+        }
+
+        /// <summary>
+        /// Execute uninitialization tasks.
+        /// </summary>
+        /// <param name="sender">object sending the event.</param>
+        /// <param name="e">event arguments.</param>
+        private void WindowClosing(object sender, CancelEventArgs e)
+        {
+            // Tell audio reading thread to stop and wait for it to finish.
+            this.reading = false;
+            if (null != readingThread)
+            {
+                readingThread.Join();
+            }
+
+            tcpserv.Close();
+            if (null != this.sensor)
+            {
+                CompositionTarget.Rendering -= UpdateEnergy;
+
+                //this.sensor.AudioSource.BeamAngleChanged -= this.AudioSourceBeamChanged;
+                //this.sensor.AudioSource.SoundSourceAngleChanged -= this.AudioSourceSoundSourceAngleChanged;
+                this.sensor.AudioSource.Stop();
+
+                this.sensor.Stop();
+                this.sensor = null;
+            }
+        }
+
+        /*
+        /// <summary>
+        /// Handles event triggered when audio beam angle changes.
+        /// </summary>
+        /// <param name="sender">object sending the event.</param>
+        /// <param name="e">event arguments.</param>
+        private void AudioSourceBeamChanged(object sender, BeamAngleChangedEventArgs e)
+        {
+            beamRotation.Angle = -e.Angle;
+
+            beamAngleText.Text = string.Format(CultureInfo.CurrentCulture, Properties.Resources.BeamAngle, e.Angle.ToString("0", CultureInfo.CurrentCulture));
+        }
+        
+        /// <summary>
+        /// Handles event triggered when sound source angle changes.
+        /// </summary>
+        /// <param name="sender">object sending the event.</param>
+        /// <param name="e">event arguments.</param>
+        private void AudioSourceSoundSourceAngleChanged(object sender, SoundSourceAngleChangedEventArgs e)
+        {
+            // Maximum possible confidence corresponds to this gradient width
+            const double MinGradientWidth = 0.04;
+
+            // Set width of mark based on confidence.
+            // A confidence of 0 would give us a gradient that fills whole area diffusely.
+            // A confidence of 1 would give us the narrowest allowed gradient width.
+            double halfWidth = Math.Max((1 - e.ConfidenceLevel), MinGradientWidth) / 2;
+
+            // Update the gradient representing sound source position to reflect confidence
+            this.sourceGsPre.Offset = Math.Max(this.sourceGsMain.Offset - halfWidth, 0);
+            this.sourceGsPost.Offset = Math.Min(this.sourceGsMain.Offset + halfWidth, 1);
+
+            // Rotate gradient to match angle
+            sourceRotation.Angle = -e.Angle;
+
+            sourceAngleText.Text = string.Format(CultureInfo.CurrentCulture, Properties.Resources.SourceAngle, e.Angle.ToString("0", CultureInfo.CurrentCulture));
+            sourceConfidenceText.Text = string.Format(CultureInfo.CurrentCulture, Properties.Resources.SourceConfidence, e.ConfidenceLevel.ToString("0.00", CultureInfo.CurrentCulture));
+        }
+        */
+
+        /// <summary>
+        /// Handles polling audio stream and updating visualization every tick.
+        /// </summary>
+        private void AudioReadingThread()
+        {
+            // Bottom portion of computed energy signal that will be discarded as noise.
+            // Only portion of signal above noise floor will be displayed.
+            const double EnergyNoiseFloor = 0.2;
+
+            while (this.reading)
+            {
+                int readCount = audioStream.Read(audioBuffer, 0, audioBuffer.Length);
+
+                // Calculate energy corresponding to captured audio in the dispatcher
+                // (UI Thread) context, so that rendering code doesn't need to
+                // perform additional synchronization.
+                Dispatcher.BeginInvoke(
+                new Action(
+                    () =>
+                    {
+                        for (int i = 0; i < readCount; i += 2)
+                        {
+                            // compute the sum of squares of audio samples that will get accumulated
+                            // into a single energy value.
+                            short audioSample = BitConverter.ToInt16(audioBuffer, i);
+                            this.accumulatedSquareSum += audioSample * audioSample;
+                            ++this.accumulatedSampleCount;
+
+                            if (this.accumulatedSampleCount < SamplesPerColumn)
+                            {
+                                continue;
+                            }
+
+                            // Each energy value will represent the logarithm of the mean of the
+                            // sum of squares of a group of audio samples.
+                            double meanSquare = this.accumulatedSquareSum / SamplesPerColumn;
+                            double amplitude = Math.Log(meanSquare) / Math.Log(int.MaxValue);
+                            double average = 0;
+
+                            // Renormalize signal above noise floor to [0,1] range.
+                            this.energy[this.energyIndex] = Math.Max(0, amplitude - EnergyNoiseFloor) / (1 - EnergyNoiseFloor);
+                            this.energyIndex = (this.energyIndex + 1) % this.energy.Length;
+                            amp_sum[cnt] = amplitude;
+                            if (checkBox_audio.IsChecked == true)
+                            {
+                                if (sum_flag)
+                                {
+                                    for (int j = 0; j < avecnt_time; j++)
+                                    {
+                                        average += amp_sum[j];
+                                    }
+                                    average /= avecnt_time;
+                                    //Console.WriteLine("cnt:{0}, average:{1}", cnt, average);
+                                }
+                                sound_average = average;
+                                if (average > (vol_sensitivity = slider1.Value))
+                                {
+                                    //Console.WriteLine("cnt:{0}, average:{1}", cnt, average);
+                                    /*Console.Write(".");
+                                    if (eye_open == false)
+                                    {
+                                        Console.Write("ひらく");
+                                        tcpserv.SendMsg("1,point_eyelidOp");
+                                        eye_open = true;
+                                        sendtiming = 0;
+                                        System.Threading.Thread.Sleep(800);
+                                        Console.WriteLine("閉じる");
+                                        tcpserv.SendMsg("1,point_eyelidInit");
+                                    }*/
+                                }
+                                else
+                                {
+                                    /*if (eye_open == true && sendtiming / 30 == 0)
+                                    {
+                                        Console.WriteLine("閉じる");
+                                        //tcpserv.SendMsg("1,point_eyelidCl");
+                                        tcpserv.SendMsg("1,point_eyelidInit");
+                                        eye_open = false;
+                                        sendtiming = 0;
+                                    }
+                                    sendtiming++;*/
+                                }
+
+                                if (cnt == (avecnt_time - 1))
+                                {
+                                    cnt = 0;
+                                    sum_flag = true;
+                                }
+                                else
+                                {
+                                    cnt++;
+                                }
+                            }
+                            /*
+                            if (amplitude > (vol_sensitivity = slider1.Value))
+                            {
+                                Console.WriteLine("amplitude:{0}", amplitude);
+                                if (eye_open == false)
+                                {
+                                    Console.WriteLine("ひらく");
+                                    tcpserv.SendMsg("1,point_eyelidOp");
+                                    eye_open = true;
+                                    cnt = 0;
+                                }
+                            }
+                            else
+                            {
+                                if (eye_open == true && cnt / 30 == 0)
+                                {
+                                    Console.WriteLine("閉じる");
+                                    //tcpserv.SendMsg("1,point_eyelidCl");
+                                    tcpserv.SendMsg("1,point_eyelidInit");
+                                    eye_open = false;
+                                    cnt = 0;
+                                }
+                                cnt++;
+                            }
+                            amplitude_before = amplitude;
+                            */
+
+                            this.accumulatedSquareSum = 0;
+                            this.accumulatedSampleCount = 0;
+                            ++this.newEnergyAvailable;
+                        }
+                    }));
+            }
+        }
+
+        /// <summary>
+        /// Handles rendering energy visualization into a bitmap.
+        /// </summary>
+        /// <param name="sender">object sending the event.</param>
+        /// <param name="e">event arguments.</param>
+        private void UpdateEnergy(object sender, EventArgs e)
+        {
+            // Calculate how many energy samples we need to advance since the last update in order to
+            // have a smooth animation effect
+            DateTime now = DateTime.UtcNow;
+            DateTime? previousRefreshTime = this.lastEnergyRefreshTime;
+            this.lastEnergyRefreshTime = now;
+
+            // No need to refresh if there is no new energy available to render
+            if (this.newEnergyAvailable <= 0)
+            {
+                return;
+            }
+
+            if (previousRefreshTime != null)
+            {
+                double energyToAdvance = this.energyError + (((now - previousRefreshTime.Value).TotalMilliseconds * SamplesPerMillisecond) / SamplesPerColumn);
+                int energySamplesToAdvance = Math.Min(this.newEnergyAvailable, (int)Math.Round(energyToAdvance));
+                this.energyError = energyToAdvance - energySamplesToAdvance;
+                this.energyRefreshIndex = (this.energyRefreshIndex + energySamplesToAdvance) % this.energy.Length;
+                this.newEnergyAvailable -= energySamplesToAdvance;
+            }
+
+            // clear background of energy visualization area
+            //this.energyBitmap.WritePixels(fullEnergyRect, this.backgroundPixels, EnergyBitmapWidth, 0);
+
+            // Draw each energy sample as a centered vertical bar, where the length of each bar is
+            // proportional to the amount of energy it represents.
+            // Time advances from left to right, with current time represented by the rightmost bar.
+            int baseIndex = (this.energyRefreshIndex + this.energy.Length - EnergyBitmapWidth) % this.energy.Length;
+            for (int i = 0; i < EnergyBitmapWidth; ++i)
+            {
+                const int HalfImageHeight = EnergyBitmapHeight / 2;
+
+                // Each bar has a minimum height of 1 (to get a steady signal down the middle) and a maximum height
+                // equal to the bitmap height.
+                int barHeight = (int)Math.Max(1.0, (this.energy[(baseIndex + i) % this.energy.Length] * EnergyBitmapHeight));
+
+                // Center bar vertically on image
+                var barRect = new Int32Rect(i, HalfImageHeight - (barHeight / 2), 1, barHeight);
+
+                // Draw bar in foreground color
+                //this.energyBitmap.WritePixels(barRect, foregroundPixels, 1, 0);
+            }
+        }
+        public int getAverage()
+        {
+            return (int)(sound_average * 100);
+        }
+    }
+}

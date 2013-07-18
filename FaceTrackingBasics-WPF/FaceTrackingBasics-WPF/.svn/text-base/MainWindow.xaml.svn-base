@@ -1,0 +1,23 @@
+﻿<Window 
+        x:Class="FaceTrackingBasics.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FaceTrackingBasics"
+        Title="Face Tracking Basics"
+        Loaded="WindowLoaded"
+        Closed="WindowClosed"
+        Width="640"
+        Height="480">
+    <Grid Name="MainGrid" 
+          Width="640" Height="480">
+        <Image Name="ColorImage"/>
+        <local:FaceTrackingViewer x:Name="faceTrackingViewer" />
+        <Rectangle Height="23" HorizontalAlignment="Left" Margin="7,371,0,0" Name="rectangle1" Stroke="Black" VerticalAlignment="Top" Width="138" Fill="White" />
+        <Rectangle Height="48" HorizontalAlignment="Left" Margin="7,317,0,0" Name="rectangle2" Stroke="Black" VerticalAlignment="Top" Width="139" Fill="White" />
+        <Button Content="Button" Height="23" HorizontalAlignment="Left" Margin="530,402,0,0" Name="button1" VerticalAlignment="Top" Width="75" Click="button1_Click" />
+        <TextBlock Height="23" HorizontalAlignment="Left" Margin="11,373,0,0" Name="textBlock1" Text="{Binding ElementName=slider1, Path=Value}" VerticalAlignment="Top" Width="131" />
+        <Slider Height="23" HorizontalAlignment="Left" Margin="7,402,0,0" Name="slider1" VerticalAlignment="Top" Width="138" Value="0.70" Maximum="1" Minimum="0.6" />
+        <CheckBox Content="Send face info" Height="20" HorizontalAlignment="Left" Margin="16,322,0,0" Name="checkBox_face" VerticalAlignment="Top" Width="122" />
+        <CheckBox Content="Send audio info" Height="20" HorizontalAlignment="Left" Margin="16,0,0,119" Name="checkBox_audio" VerticalAlignment="Bottom" Width="122" IsEnabled="True" />
+    </Grid>
+</Window>
